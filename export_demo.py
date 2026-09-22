@@ -1,6 +1,6 @@
 """
 Export a self-contained JSON snapshot of one Prediction Agent run, for the
-demo dashboard in `dashboard/`.
+demo dashboard in `docs/`.
 
 Everything the dashboard shows comes from here, so a reviewer can regenerate it
 and diff the numbers instead of trusting a screenshot:
@@ -19,7 +19,8 @@ from prediction_agent.behaviour import simulate_event_log, behaviour_features
 from prediction_agent.evaluate import run_ladder, evaluate_scores
 
 SRC = "data/bom_data_clus_anom.csv"
-OUT = "dashboard/demo_data.json"
+# Served by GitHub Pages from /docs on the default branch.
+OUT = "docs/demo_data.json"
 BUDGET = float(os.environ.get("AGENT_BUDGET", 0.01))
 SEED = 1
 MAX_RANK = 2400          # deepest budget the dashboard slider can reach
@@ -133,7 +134,7 @@ def main() -> None:
         "kb_stats": kb.stats(),
     }
 
-    os.makedirs("dashboard", exist_ok=True)
+    os.makedirs("docs", exist_ok=True)
     with open(OUT, "w") as fh:
         json.dump(payload, fh)
     print(f"Wrote {OUT} ({os.path.getsize(OUT)/1024:.0f} kB)")

@@ -165,15 +165,17 @@ How to read this honestly:
 
 ## Demonstrating it to someone else
 
-`dashboard/` is a static page that walks the loop on the real data: the label
+`docs/` is a static page that walks the loop on the real data, published with
+GitHub Pages at
+<https://simoncharmms.github.io/predicting_bom_errors_on_time/>: the label
 defect, the eight detectors and their firing rates, the mined signatures, an
 interactive review budget, a real alert with its evidence subgraph, and the
 verdict feedback. Build and open it with:
 
 ```bash
 ./run.sh
-PYTHONPATH=src .venv/bin/python export_demo.py   # writes dashboard/demo_data.json
-python3 -m http.server -d dashboard 8412
+PYTHONPATH=src .venv/bin/python export_demo.py   # writes docs/demo_data.json
+python3 -m http.server -d docs 8412
 ```
 
 Every figure it displays is read from `demo_data.json`, so a reviewer can
