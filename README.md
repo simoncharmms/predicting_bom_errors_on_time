@@ -79,7 +79,15 @@ Some information on the dataset:
 <!-- GETTING STARTED -->
 ## Getting Started
 
-There are no prerequisites, every library required is in the virtual environment.
+    uv venv --python 3.11 .venv        # TensorFlow 2.15 requires Python <= 3.11
+    uv pip install --python .venv/bin/python -r requirements.txt
+    ./run.sh                           # the pipeline below
+    ./agent.sh                         # the Prediction Agent on top of it
+
+The original claim that "there are no prerequisites" no longer holds on current
+Python: see [SETUP_AND_FIXES.md](SETUP_AND_FIXES.md) for what had to be repaired
+and, more importantly, for two label/leakage defects that change the reported
+results. The agent layer is documented in [AGENT.md](AGENT.md).
 
 ### Starting the pipeline
 
