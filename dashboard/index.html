@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prediction Agent — working principle</title>
+<meta name="description" content="How the Prediction Agent detects BOM error patterns from typed data-quality violations, configuration behaviour and a shared knowledge base — on the real dataset.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+<link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-label="Prediction Agent logo">
+        <rect x="9.5" y="1.5" width="7" height="7" stroke="currentColor" stroke-width="1.6"/>
+        <rect x="1.5" y="17.5" width="7" height="7" stroke="currentColor" stroke-width="1.6"/>
+        <rect x="17.5" y="17.5" width="7" height="7" fill="currentColor"/>
+        <path d="M13 8.5v4.5M13 13H5v4.5M13 13h8v4.5" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      <div>
+        <div class="brand-name">Prediction Agent</div>
+        <div class="brand-sub">BOM error patterns</div>
+      </div>
+    </div>
+
+    <nav>
+      <div class="nav-label">Working principle</div>
+      <div class="nav" id="nav">
+        <a href="#premise"><span class="idx">00</span><span>The premise</span></a>
+        <a href="#observe"><span class="idx">01</span><span>Observe — BDQVs</span></a>
+        <a href="#correlate"><span class="idx">02</span><span>Correlate — registry</span></a>
+        <a href="#predict"><span class="idx">03</span><span>Predict — budget</span></a>
+        <a href="#explain"><span class="idx">04</span><span>Explain — worklist</span></a>
+        <a href="#learn"><span class="idx">05</span><span>Learn &amp; share</span></a>
+        <a href="#limits"><span class="idx">06</span><span>What it cannot do</span></a>
+      </div>
+    </nav>
+
+    <div class="sidebar-foot">
+      Every number on this page is read from one run.<br>
+      Reproduce with <code>./run.sh</code>, <code>./agent.sh</code>,<br>
+      <code>export_demo.py</code>.
+      <div id="foot-meta" style="margin-top:10px"></div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="wrap">
+
+      <!-- ============ 00 premise ============ -->
+      <section id="premise" style="padding-top:var(--s2)">
+        <h1>Finding BOM errors before the next maturity phase</h1>
+        <p class="lede">A bill of materials is edited for months by many engineers. Errors are found late, when a fix is expensive. The agent reads each BOM snapshot, turns defects into <strong>typed violations</strong>, ranks the rows an engineer should check, and shows why — then learns from the verdict. This page walks that loop on the real dataset.</p>
+
+        <div class="kpis" id="kpis" style="margin-top:var(--s5)"></div>
+
+        <div class="callout caution" id="label-callout"></div>
+
+        <div class="card" style="margin-top:var(--s4)">
+          <h3>The loop</h3>
+          <div class="flow">
+            <svg viewBox="0 0 760 168" width="100%" height="168" role="img" aria-label="Agent loop: observe, predict, explain, learn, share, with a shared knowledge base">
+              <defs>
+                <marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+                  <path d="M0 0 L8 4 L0 8 z" fill="#6b7685"/>
+                </marker>
+              </defs>
+              <g font-family="Satoshi, sans-serif" font-size="12" fill="#e6eaf0">
+                <!-- knowledge base -->
+                <rect x="222" y="10" width="316" height="38" rx="8" fill="#1b212a" stroke="#8b8ce8" stroke-width="1"/>
+                <text x="380" y="27" text-anchor="middle" font-size="11" fill="#8b8ce8" letter-spacing="0.6">SHARED KNOWLEDGE BASE</text>
+                <text x="380" y="41" text-anchor="middle" font-size="10" fill="#9aa5b4">temporal graph · pattern registry · provenance · decay</text>
+
+                <!-- stages -->
+                <g>
+                  <rect x="18" y="72" width="118" height="42" rx="8" fill="#151a21" stroke="#262e39"/>
+                  <text x="77" y="90" text-anchor="middle" font-weight="600">observe</text>
+                  <text x="77" y="104" text-anchor="middle" font-size="10" fill="#6b7685">8 BDQV types</text>
+
+                  <rect x="164" y="72" width="118" height="42" rx="8" fill="#151a21" stroke="#262e39"/>
+                  <text x="223" y="90" text-anchor="middle" font-weight="600">predict</text>
+                  <text x="223" y="104" text-anchor="middle" font-size="10" fill="#6b7685">ranked, budgeted</text>
+
+                  <rect x="310" y="72" width="118" height="42" rx="8" fill="#151a21" stroke="#262e39"/>
+                  <text x="369" y="90" text-anchor="middle" font-weight="600">explain</text>
+                  <text x="369" y="104" text-anchor="middle" font-size="10" fill="#6b7685">evidence subgraph</text>
+
+                  <rect x="456" y="72" width="118" height="42" rx="8" fill="#151a21" stroke="#e8a33d"/>
+                  <text x="515" y="90" text-anchor="middle" font-weight="600" fill="#e8a33d">engineer</text>
+                  <text x="515" y="104" text-anchor="middle" font-size="10" fill="#9aa5b4">confirm / dismiss</text>
+
+                  <rect x="602" y="72" width="118" height="42" rx="8" fill="#151a21" stroke="#262e39"/>
+                  <text x="661" y="90" text-anchor="middle" font-weight="600">learn</text>
+                  <text x="661" y="104" text-anchor="middle" font-size="10" fill="#6b7685">+ share patterns</text>
+                </g>
+
+                <g stroke="#6b7685" fill="none" marker-end="url(#ar)">
+                  <path d="M136 93 H160"/>
+                  <path d="M282 93 H306"/>
+                  <path d="M428 93 H452"/>
+                  <path d="M574 93 H598"/>
+                  <!-- read from KB -->
+                  <path d="M240 52 V68" stroke-dasharray="3 3"/>
+                  <path d="M360 52 V68" stroke-dasharray="3 3"/>
+                  <!-- write back to KB -->
+                  <path d="M661 72 V60 H544 V52" stroke-dasharray="3 3"/>
+                  <!-- loop back -->
+                  <path d="M661 114 V142 H77 V118"/>
+                </g>
+                <text x="392" y="158" text-anchor="middle" font-size="10" fill="#6b7685" font-family="JetBrains Mono, monospace">next maturity phase</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 01 observe ============ -->
+      <section id="observe">
+        <header>
+          <div class="eyebrow">01 · Observe</div>
+          <h2>One opaque error flag becomes eight typed violations</h2>
+          <p>The dataset carries a single <span class="mono">erroneous</span> column: something was wrong, somewhere, somehow. A BDQV — BOM data quality violation — is instead <strong>typed, localised and timestamped</strong>, so it can be explained, routed to an owner and exchanged with other agents. All eight detectors read observable columns only and never the label.</p>
+        </header>
+        <div class="card">
+          <div class="t-scroll">
+            <table id="bdqv-table">
+              <thead><tr>
+                <th>BDQV type</th><th>Fires on train</th><th>Share of rows</th>
+                <th>Error rate when firing</th><th>vs. base rate</th><th>In signature</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="callout" id="observe-callout"></div>
+      </section>
+
+      <!-- ============ 02 correlate ============ -->
+      <section id="correlate">
+        <header>
+          <div class="eyebrow">02 · Correlate</div>
+          <h2>The signal is in the combinations, not the single detector</h2>
+          <p>Co-occurring violations on the same row form a <strong>signature</strong>. The agent mines signatures on training rows only and stores support, hits and lift in the shared registry. A registry hit is cheap, needs no retraining, and is the part of the model that could warm-start a new vehicle generation.</p>
+        </header>
+        <div class="card">
+          <div class="t-scroll">
+            <table id="pattern-table">
+              <thead><tr>
+                <th>BDQV signature</th><th>Support</th><th>Errors</th>
+                <th>Precision</th><th>Lift</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 03 predict ============ -->
+      <section id="predict">
+        <header>
+          <div class="eyebrow">03 · Predict</div>
+          <h2>Ranking under a review budget an engineer actually has</h2>
+          <p>Nobody reviews 23,231 rows. The right question is <strong>"of the rows we do check, how many are real errors?"</strong> Drag the budget to see it. Every bar is recomputed from the stored ranking of one held-out run, so these are measured values, not a formula.</p>
+        </header>
+
+        <div class="card">
+          <div class="control">
+            <div>
+              <h3 style="margin-bottom:var(--s3)">Review budget</h3>
+              <div class="slider-row">
+                <span class="mono dim">0.1%</span>
+                <input id="budget" type="range" min="24" max="2400" step="1" value="232"
+                       aria-label="Review budget: number of rows an engineer checks">
+                <span class="mono dim">10%</span>
+              </div>
+            </div>
+            <div class="budget-readout">
+              <div class="b-k" id="b-k">232</div>
+              <div class="b-lab" id="b-lab">rows checked · 1.00% of the test set</div>
+              <div style="margin-top:6px"><span class="pill up" id="regime">agent ahead of baseline</span></div>
+            </div>
+          </div>
+
+          <div class="ladder" id="ladder"></div>
+          <div class="legend">
+            <span><i class="swatch solid"></i>precision at budget, as lift over base rate</span>
+            <span><i class="swatch dash"></i>permuted control — same columns, shuffled values</span>
+            <span><i class="swatch line"></i>base rate (lift 1.00×) — no better than checking at random</span>
+          </div>
+          <p class="dim" style="font-size:12px;margin:var(--s4) 0 0;border-top:1px solid var(--line-soft);padding-top:var(--s3)">
+            Widen the budget past roughly 3% and the ordering inverts: the plain baseline overtakes the
+            agent. That is a real property of the method, not a rendering glitch. The agent concentrates
+            its confidence in a short worklist; it is the wrong tool if you intend to review most of the
+            BOM anyway.</p>
+        </div>
+
+        <div class="grid-2" style="margin-top:var(--s4)">
+          <div class="callout ok">
+            <h3>Why the dashed bars matter most</h3>
+            <p id="control-text"></p>
+          </div>
+          <div class="callout caution">
+            <h3>What this chart does not show</h3>
+            <p id="prauc-text"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 04 explain ============ -->
+      <section id="explain">
+        <header>
+          <div class="eyebrow">04 · Explain</div>
+          <h2>Every alert arrives with its evidence</h2>
+          <p>This is the artefact the engineer receives. Select a row: the agent states which signature fired, that signature's historical precision, the behaviour and graph features behind the score, and the neighbourhood of the part in the knowledge graph. The verdict column is the ground truth from the held-out phases, shown here only to make the demo checkable.</p>
+        </header>
+        <div class="split">
+          <div class="worklist" id="worklist" role="listbox" aria-label="Alert worklist"></div>
+          <div class="card evidence" id="evidence">
+            <div class="empty">Select an alert to see its evidence</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 05 learn ============ -->
+      <section id="learn">
+        <header>
+          <div class="eyebrow">05 · Learn &amp; share</div>
+          <h2>Verdicts change the registry, not just a log file</h2>
+          <p>Each confirm or dismiss is written back with provenance and updates the counters of the signature that produced the alert. Precision stops being a number in a paper and becomes a quantity the system tracks per pattern. Patterns above a lift and support floor are published for peer agents — as BDQVs, not feature vectors, so a Supplier Agent's "this supplier delivers late" can reach this agent without coupling their models.</p>
+        </header>
+        <div class="split">
+          <div class="card">
+            <h3>Human precision per signature, after one round</h3>
+            <div class="t-scroll">
+              <table id="feedback-table">
+                <thead><tr><th>Signature</th><th>Confirmed</th><th>Dismissed</th><th>Precision</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="dim" style="font-size:12px;margin:var(--s3) 0 0">Verdicts were generated from held-out ground truth, standing in for the engineer.</p>
+          </div>
+          <div class="card">
+            <h3>Knowledge base after the run</h3>
+            <div class="kpis" id="kb-stats" style="grid-template-columns:repeat(auto-fit,minmax(104px,1fr))"></div>
+            <h3 style="margin-top:var(--s5)">Contract rules</h3>
+            <ul class="tight">
+              <li><strong>Append-only with provenance.</strong> Agent, model version, confidence and timestamp on every row. Two agents may contradict each other; both statements survive.</li>
+              <li><strong>Retract-your-own-only.</strong> No agent can delete another's assertion.</li>
+              <li><strong>Confidence decay.</strong> Exponential, 180-day half-life, so an unconfirmed pattern falls out of the high-precision path by itself.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 06 limits ============ -->
+      <section id="limits">
+        <header>
+          <div class="eyebrow">06 · Honest limits</div>
+          <h2>What this demo does not prove</h2>
+        </header>
+        <div class="card">
+          <ul class="tight" id="limits-list"></ul>
+        </div>
+        <hr class="rule">
+        <p class="dim" style="font-size:12px;margin-top:var(--s5)">
+          Source: <span class="mono">simoncharmms/predicting_bom_errors_on_time</span> ·
+          agent in <span class="mono">src/prediction_agent/</span> ·
+          method and caveats in <span class="mono">AGENT.md</span>, defect log in <span class="mono">SETUP_AND_FIXES.md</span>.
+        </p>
+      </section>
+
+    </div>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -63,12 +63,14 @@ def _plain_model(seed):
 
 
 def run_ladder(df_tr, y_tr, obs_tr, df_te, y_te, obs_te, kb,
-               budget_fraction=0.01, seed=1) -> pd.DataFrame:
+               budget_fraction=0.01, seed=1, return_scores=False):
     rows = []
+    kept: dict[str, np.ndarray] = {}
 
     # --- A: repo features only, no agent machinery -----------------------
     model = _plain_model(seed).fit(df_tr[BASE_FEATURES].astype(float), y_tr)
     scores = model.predict_proba(df_te[BASE_FEATURES].astype(float))[:, 1]
+    kept["A: repo features"] = scores
     rows.append({"model": "A: repo features",
                  **evaluate_scores(y_te, scores, budget_fraction)})
 
@@ -78,9 +80,10 @@ def run_ladder(df_tr, y_tr, obs_tr, df_te, y_te, obs_te, kb,
     Xtr = pd.concat([df_tr[BASE_FEATURES].astype(float), obs_tr["bdqv"][bdqv_cols]], axis=1)
     Xte = pd.concat([df_te[BASE_FEATURES].astype(float), obs_te["bdqv"][bdqv_cols]], axis=1)
     model = _plain_model(seed).fit(Xtr, y_tr)
+    scores = model.predict_proba(Xte)[:, 1]
+    kept["B: + BDQV types"] = scores
     rows.append({"model": "B: + BDQV types",
-                 **evaluate_scores(y_te, model.predict_proba(Xte)[:, 1],
-                                   budget_fraction)})
+                 **evaluate_scores(y_te, scores, budget_fraction)})
 
     # --- C / D / E and their shuffled controls ---------------------------
     variants = [
@@ -95,7 +98,10 @@ def run_ladder(df_tr, y_tr, obs_tr, df_te, y_te, obs_te, kb,
                                 seed=seed, **flags)
         agent.fit(df_tr, y_tr, obs_tr, shuffle=shuffle)
         scores = agent.score(df_te, obs_te, shuffle=shuffle)
+        kept[name] = scores
         rows.append({"model": name,
                      **evaluate_scores(y_te, scores, budget_fraction)})
 
+    if return_scores:
+        return pd.DataFrame(rows), kept
     return pd.DataFrame(rows)

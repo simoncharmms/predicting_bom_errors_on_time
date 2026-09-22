@@ -268,14 +268,40 @@ class PredictionAgent:
                 part=float(row["part"]), component=float(row["component"]),
                 phase=float(row["timestamp"]), score=float(scores[top[rank]]),
                 signature=str(sig.loc[i]), bdqv_types=active,
-                evidence={"rho_v": float(row["rho_v"]),
-                          "anom": float(row.get("anom", 0)),
-                          "registry_precision": float(
-                              self._kg_maps["pattern_precision"].get(
-                                  sig.loc[i], self._train_base_rate))}))
+                evidence=self._evidence(i, row, str(sig.loc[i]), observed)))
         return alerts
 
     # -- explain -----------------------------------------------------------
+    def _evidence(self, i, row, signature: str, observed: dict) -> dict:
+        """
+        The drivers behind one score, so the engineer can disagree with the
+        agent for a stated reason rather than on instinct.
+        """
+        bd = observed["bdqv"].loc[i]
+        ev = {
+            "registry_precision": float(
+                self._kg_maps["pattern_precision"].get(
+                    signature, self._train_base_rate)),
+            "bdqv_count": float(bd["bdqv_count"]),
+            "bdqv_severity_max": float(bd["bdqv_severity_max"]),
+            "rho_v": float(row["rho_v"]),
+            "isolation_forest": ("anomaly" if float(row.get("anom", 0)) < 0
+                                 else "normal"),
+        }
+        if self.use_kg:
+            ev["kg_component_risk"] = float(
+                self._kg_maps["component_risk"].get(
+                    row["component"], self._train_base_rate))
+            ev["kg_part_risk"] = float(
+                self._kg_maps["part_risk"].get(
+                    row["part"], self._train_base_rate))
+        if self.use_behaviour and "behaviour" in observed:
+            beh = observed["behaviour"].loc[i]
+            for col in ("beh_session_load", "beh_dwell_z", "beh_undo_rate"):
+                if col in beh.index:
+                    ev[col] = float(beh[col])
+        return ev
+
     def explain(self, alert: Alert) -> dict:
         """The evidence subgraph an engineer sees next to the alert."""
         edges = self.kb.neighbours(f"part:{alert.part:g}")

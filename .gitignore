@@ -188,3 +188,5 @@ data/mlp_report.json
 .venv/
 run*.log
 tail.log
+data/demo_kb.sqlite
+agent_run.log

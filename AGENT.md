@@ -163,6 +163,36 @@ How to read this honestly:
   is a triage aid, not an oracle, and the phase-regression head is still not
   usable (MAE ≈ 5 phases).
 
+## Demonstrating it to someone else
+
+`dashboard/` is a static page that walks the loop on the real data: the label
+defect, the eight detectors and their firing rates, the mined signatures, an
+interactive review budget, a real alert with its evidence subgraph, and the
+verdict feedback. Build and open it with:
+
+```bash
+./run.sh
+PYTHONPATH=src .venv/bin/python export_demo.py   # writes dashboard/demo_data.json
+python3 -m http.server -d dashboard 8412
+```
+
+Every figure it displays is read from `demo_data.json`, so a reviewer can
+regenerate the snapshot and diff it rather than trusting a screenshot.
+
+The budget control is the part worth demonstrating, because it also shows the
+method's boundary: past roughly a 3 % budget the ordering inverts and the plain
+baseline overtakes the agent. The agent concentrates its confidence in a short
+worklist and is the wrong tool if most of the BOM will be reviewed anyway.
+
+### Run-to-run variance
+
+The dashboard snapshot is a separate run from the one tabulated above and puts
+rung D at 1.77x rather than 1.84x (71 vs 74 hits). The knowledge base is rebuilt
+per run and the boosted trees are seeded but not deterministic across differing
+registry state, so treat differences between neighbouring rungs of this size as
+noise. The A-to-D gap and the direction of both shuffled controls are stable;
+the exact ordering of D and E is not.
+
 ## What would move the needle next
 
 1. A real configuration event log. The behaviour branch is the one block whose
