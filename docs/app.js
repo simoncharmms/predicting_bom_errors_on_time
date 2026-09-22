@@ -330,7 +330,9 @@ function initNav() {
 }
 
 /* ---------------- boot ---------------- */
-fetch('demo_data.json')
+// no-cache: after a regenerated snapshot is pushed, a reviewer who already
+// opened the page must not be served the previous run's numbers.
+fetch('demo_data.json', { cache: 'no-cache' })
   .then(r => r.json())
   .then(data => {
     D = data;
