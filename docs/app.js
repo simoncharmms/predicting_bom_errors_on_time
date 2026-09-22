@@ -172,18 +172,30 @@ function updateLadder(k) {
   const Dd = atK('D: + KG context', k), Ds = atK('D-shuffled', k);
   const A = atK('A: repo features', k), E = atK('E: + registry', k);
   const holds = (x, y) => x.lift > y.lift;
+  // Binomial standard error on precision@k. Differences smaller than roughly
+  // two of these are not resolvable from a single run, and several rungs of
+  // this ladder are exactly that close - so the page must not assert more.
+  const sePP = Math.sqrt(E.precision * (1 - E.precision) / k) * 100;
+  const seLift = sePP / (base * 100);
   document.getElementById('control-text').innerHTML =
     `A block that only adds columns to the feature matrix would score the same when its values are
      permuted. At this budget the behaviour block is <strong>${C.lift.toFixed(2)}×</strong> against
      <strong>${Cs.lift.toFixed(2)}×</strong> permuted, and the graph block
      <strong>${Dd.lift.toFixed(2)}×</strong> against <strong>${Ds.lift.toFixed(2)}×</strong> permuted.
      ${holds(C, Cs) && holds(Dd, Ds)
-        ? 'Both controls hold, so both blocks contribute structure rather than capacity.'
-        : 'At this budget at least one control does <strong>not</strong> hold — the honest reading is that the block adds capacity, not structure here.'}
+        ? `Both controls point the right way. Read them against the sampling noise, though:
+           the binomial standard error on precision at this budget is ±${sePP.toFixed(1)} pp,
+           i.e. ±${seLift.toFixed(2)}× — so these gaps are worth roughly
+           ${(Math.min(C.lift - Cs.lift, Dd.lift - Ds.lift) / seLift).toFixed(1)}–${(Math.max(C.lift - Cs.lift, Dd.lift - Ds.lift) / seLift).toFixed(1)}
+           standard errors from one seed. Suggestive, not settled.`
+        : `At this budget at least one control does <strong>not</strong> point the right way — the
+           honest reading is that the block adds capacity, not structure here.`}
      Against the plain baseline the full agent finds ${E.hits} real errors versus ${A.hits}
      (${E.hits === A.hits ? 'no difference'
          : (E.hits > A.hits ? `+${E.hits - A.hits}` : `${E.hits - A.hits}`) + ' errors'})
-     for the same engineer time.`;
+     for the same engineer time — a gap of
+     ${((E.lift - A.lift) / seLift).toFixed(1)} standard errors, which is the one comparison here
+     that is comfortably resolved.`;
 
   document.getElementById('prauc-text').innerHTML =
     `Global ranking quality does not improve. PR-AUC across the whole test set is
@@ -307,9 +319,12 @@ function renderLimits() {
      about the interface, not evidence that real user behaviour predicts errors.`,
     `<strong>Global ranking quality is unchanged.</strong> PR-AUC does not improve over the plain
      baseline at any rung of the ladder.`,
-    `<strong>One run, one seed.</strong> Seed ${D.meta.seed} only. The differences between neighbouring
-     rungs are of the same order as the run-to-run variance seen while developing, so treat the ordering
-     as indicative until it is repeated across seeds.`,
+    `<strong>One run, one seed, and the ladder is not statistically separated.</strong> Seed
+     ${D.meta.seed} only. At the default budget the binomial standard error on precision@k is about
+     ±3 pp (±7 hits). The baseline-to-full-agent gap is roughly 3 standard errors and survives; the
+     individual contributions of the behaviour, graph and registry rungs are 1–2 standard errors apart
+     and do <strong>not</strong>. Establishing them needs rolling-origin folds over several seeds with
+     confidence intervals, which has not been done yet.`,
     `<strong>The phase-regression head is still unusable</strong> (MAE ≈ 5 of 14 phases in the
      corrected MLP) and is not part of the agent's ranking.`,
   ].map(t => `<li>${t}</li>`).join('');
