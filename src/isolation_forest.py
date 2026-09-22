@@ -17,7 +17,7 @@ from sklearn.model_selection import train_test_split
 
 from plots import plot, gca, formatter, add_titlebox, fancy_dendrogram
 from utils import replacegaps
-from constants import FP_DATA
+from constants import FP_DATA, RANDOM_SEED
 # blockPrint()
 
 start_time = time.time()
@@ -29,8 +29,16 @@ next_script = 'logistic_regression.py'
 
 n_estimators=1000
 max_samples=25019
-contamination=0.05
-max_features=14
+# contamination was hard-coded to 0.05 against an observed positive rate of
+# 0.24 % - a 20x mis-specification that guaranteed ~17k spurious anomalies.
+# "auto" lets sklearn use the original Liu et al. offset instead; setting
+# IFOREST_CONTAMINATION overrides it with the empirical base rate.
+contamination = os.environ.get("IFOREST_CONTAMINATION", "auto")
+try:
+    contamination = float(contamination)
+except ValueError:
+    pass
+max_features=14  # capped to the real feature count below
 
 
 def isolation_forest():
@@ -57,19 +65,27 @@ def isolation_forest():
     ### ---------------------------------------------------------------------------
     ### partute Isolation forest.
     ### ---------------------------------------------------------------------------
-    selected_features = ["component", "part", "lcim", "timestamp", "indc", "istp_bool",
-                         "nlbw", "scop", "rldd_bool", "sca", "rho_v", "conf", "clus", "erroneous"]
-    metrics_df = df[selected_features]
+    # The published dataset is anonymized: the original internal column names
+    # (lcim, indc, istp_bool, nlbw, scop, rldd_bool, sca, conf) map to
+    # feature_1..feature_6. Only use columns that actually exist.
+    selected_features = ["component", "part", "timestamp",
+                         "feature_1", "feature_2", "feature_3",
+                         "feature_4", "feature_5", "feature_6",
+                         "rho_v", "clus"]
+    selected_features = [c for c in selected_features if c in df.columns]
+    metrics_df = df[selected_features].copy()
     # metrics_df=pd.pivot_table(df,values='rho_v',index='kogr',columns='timestamp')
-    metrics_df.reset_index(inplace=True)
+    metrics_df = metrics_df.reset_index(drop=True)
     metrics_df.fillna(0, inplace=True)
     metrics_df
     metrics_df.columns
     # specify the 12 metrics column names to be modelled
-    to_model_columns = metrics_df.columns
+    # Never feed the label ("erroneous") into an unsupervised detector.
+    to_model_columns = [c for c in metrics_df.columns if c != "erroneous"]
     from sklearn.ensemble import IsolationForest
     clf = IsolationForest(n_estimators=n_estimators, max_samples=max_samples, contamination=contamination, \
-                          max_features=max_features)
+                          max_features=min(max_features, len(to_model_columns)),
+                          random_state=RANDOM_SEED, n_jobs=-1)
     clf.fit(metrics_df[to_model_columns])
     pred = clf.predict(metrics_df[to_model_columns])
     metrics_df['anomaly'] = pred
@@ -86,7 +102,6 @@ def isolation_forest():
     '''
     # Save the new dataset.
     df["anom"] = metrics_df['anomaly']
-    df["nael"] = akt_ohe_nael_datacsv["nael"]
     # Clean up and look out for nans.
     df = replacegaps(df)
     # print(df.isna().sum())

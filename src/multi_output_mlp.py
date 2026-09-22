@@ -1,260 +1,277 @@
-""" 
-This script implements outlier detection based on isolation forest.
-""" 
+"""
+Multi-output MLP predicting (a) whether a part is erroneous and (b) at which
+BOM maturity phase the error occurs.
+
+This is the same model family as in the paper (one shared trunk, one regression
+head for the timestamp, one classification head for `erroneous`), but the
+training and evaluation protocol has been corrected. See SETUP_AND_FIXES.md for
+the full list; the changes that affect reported numbers are:
+
+  * features are standardised (fit on train only) - the raw features span
+    orders of magnitude (feature_5 has values around -91, rho_v around 1),
+    which an unscaled ReLU MLP cannot handle;
+  * the classification head uses softmax, not sigmoid - sigmoid outputs do not
+    form a distribution and are invalid under sparse_categorical_crossentropy;
+  * the split is temporal (early maturity phases -> late), not random, because
+    the task is to predict errors *on time*;
+  * the positive class (0.24 %) is weighted, so the model cannot win by
+    predicting "no error" everywhere;
+  * the decision threshold is chosen on a validation split under an explicit
+    alert budget instead of being hard-coded to 0.5 via np.around();
+  * the headline metrics are PR-AUC, precision@k and recall@k, not accuracy.
+"""
 
 ### ---------------------------------------------------------------------------
 ### Preliminaries.
 ### ---------------------------------------------------------------------------
 
-import os 
+import os
 import time
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import sklearn.metrics as metrics
-import tensorflow as tf
-#import pydot
-#import graphviz
-from keras.models import Sequential
-from keras.layers import Dense
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score
-from sklearn.metrics import recall_score, confusion_matrix, roc_curve, auc
-from sklearn.metrics import mean_absolute_error
-from sklearn.metrics import precision_recall_fscore_support
+import json
+import random
 
-from plots import plot, gca, formatter, add_titlebox, fancy_dendrogram
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from sklearn.metrics import (average_precision_score, confusion_matrix,
+                            mean_absolute_error, precision_score,
+                            recall_score, roc_auc_score)
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.models import Model
+
 from utils import replacegaps
-from constants import FP_DATA
-# blockPrint()
+from constants import (FP_DATA, RANDOM_SEED, ALERT_BUDGET_FRACTION,
+                       LABEL_THRESHOLD)
 
 start_time = time.time()
-next_script = 'logistic_regression.py'
+
+FEATURES = ['component', 'part', 'feature_1', 'feature_2', 'feature_3',
+            'feature_4', 'feature_5', 'rho_v', 'clus', 'anom']
+TARGET_REG = 'timestamp'
+TARGET_CLAS = 'erroneous'
+
+
+def set_seeds(seed=RANDOM_SEED):
+    """Make a run reproducible. The original code seeded nothing."""
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
+def temporal_split(df, val_fraction=0.2, test_fraction=0.2):
+    """
+    Split by BOM maturity phase instead of shuffling rows.
+
+    A random split lets the model observe later maturity phases of the very same
+    part while it is asked to predict an earlier one, which is exactly the
+    information a productive system does not have. Phases are ordered, so the
+    latest phases become the test set.
+    """
+    # Split on cumulative ROW share, not on the count of distinct phases: the
+    # phases are wildly unbalanced (phases 0-4 hold 93 % of all rows), so
+    # "last 20 % of phases" left only 199 rows and zero positives in test.
+    counts = df[TARGET_REG].value_counts().sort_index()
+    phases = counts.index.to_numpy()
+    share = counts.cumsum() / counts.sum()
+    train_end = 1.0 - val_fraction - test_fraction
+    val_end = 1.0 - test_fraction
+    prev = share.shift(1).fillna(0.0).to_numpy()
+    val_phases = phases[(prev >= train_end) & (prev < val_end)]
+    test_phases = phases[prev >= val_end]
+    is_test = df[TARGET_REG].isin(test_phases)
+    is_val = df[TARGET_REG].isin(val_phases)
+    return ~(is_test | is_val), is_val, is_test, val_phases, test_phases
+
+
+def precision_recall_at_k(y_true, scores, k):
+    """
+    Precision and recall inside an alert budget of k parts.
+
+    This is what a BOM engineer actually experiences: they work a ranked
+    worklist of fixed length, they never see a 0.5 threshold.
+    """
+    k = int(min(k, len(scores)))
+    if k == 0:
+        return float('nan'), float('nan'), 0
+    order = np.argsort(-np.asarray(scores))[:k]
+    hits = int(np.asarray(y_true)[order].sum())
+    total_pos = int(np.asarray(y_true).sum())
+    precision = hits / k
+    recall = hits / total_pos if total_pos else float('nan')
+    return precision, recall, hits
+
+
+def threshold_for_budget(scores, budget_fraction):
+    """Pick the score threshold that emits `budget_fraction` of rows as alerts."""
+    return float(np.quantile(scores, 1.0 - budget_fraction))
+
 
 def multi_output_mlp():
-    ### ---------------------------------------------------------------------------
+    set_seeds()
+
+    ### -----------------------------------------------------------------------
     ### Load data.
-    ### ---------------------------------------------------------------------------
+    ### -----------------------------------------------------------------------
+    df = pd.read_csv(FP_DATA + 'bom_data_clus_anom.csv', sep=',',
+                     encoding='latin-1')
+    df = df.loc[:, ~df.columns.str.startswith('Unnamed')]
+    df = replacegaps(df).fillna(0)
 
-    # Loading the dataset is quicker using the built-in import.
-    akt_ohe_nael_datacsv = pd.read_csv(FP_DATA + 'bom_data_clus_anom.csv', sep=',', encoding='latin-1')
-    df = akt_ohe_nael_datacsv
+    ### -----------------------------------------------------------------------
+    ### Hyperparameters.
+    ### -----------------------------------------------------------------------
+    epochs = int(os.environ.get("MLP_EPOCHS", 200))
+    batch_size = int(os.environ.get("MLP_BATCH_SIZE", 256))
+    patience = int(os.environ.get("MLP_PATIENCE", 10))
 
-    ### ---------------------------------------------------------------------------
-    ### Clean and sample data.
-    ### ---------------------------------------------------------------------------
-    # Column "Unnamed: 0" due to csv.
-    del df["Unnamed: 0"]
-    # Sample if necessary to partute efficiently.
-    print(df.info())
-    # df = df.sample(frac=0.1, replace=True, random_state=1)
-    # Clean up and look out for nans.
-    df = replacegaps(df)
-    # print(df.isna().sum())
-    df = df.fillna(0)
-    # print(df.isna().sum())
-    # print(df.info())
-    ### ---------------------------------------------------------------------------
-    ### Define hyperparameters.
-    ### ---------------------------------------------------------------------------
-    # Neural Network hyperparameters.
-    epochs = 510
-    batch_size = 64
-    test_size = 0.15
-    ### ---------------------------------------------------------------------------
-    ### Multilayer perceptron model.
-    ### ---------------------------------------------------------------------------
-    # Define the target variable and features
-    target_reg = 'timestamp'
-    target_clas = 'erroneous'
-    # Drop targets.
-    # features = [x for x in list(df.columns) if x not in [target_reg, target_clas]]
-    features = ['component', 'part', 'feature_1', 'feature_2', 'feature_3', 'feature_4', 'feature_5', 'rho_v', 'clus', 'anom']
-    from sklearn.metrics import mean_absolute_error
-    from sklearn.metrics import accuracy_score
-    from sklearn.model_selection import train_test_split
-    from sklearn.preprocessing import LabelEncoder
-    from tensorflow.keras.models import Model
-    from tensorflow.keras.layers import Input
-    from tensorflow.keras.layers import Dense
-    # from tensorflow.keras.utils import plot_model
-    from tensorflow.keras.metrics import Recall
-    # num_df = (df.drop(columns, axis=1).join(df[columns].apply(pd.to_numeric, errors='coerce')))
-    X = df[features]
-    y_reg = df[target_reg].astype(int)
-    y_clas = df[target_clas].astype(int)
-    # Print the input dataset to LaTeX.
-    X_info = round(X.describe())
-    # print(X_info.to_latex(index=False))
-    n_features = len(features)
-    # encode strings to integer
-    n_class = 2
-    # split data into train and test sets
-    X_train, X_test, y_train_reg, y_test_reg, y_train_clas, y_test_clas = train_test_split(X, y_reg, y_clas,
-                                                                                           test_size=test_size,
-                                                                                           random_state=1)
-    # input
-    visible = Input(shape=(n_features,))
-    hidden1 = Dense(n_features, activation='relu', kernel_initializer='he_normal')(visible)
-    hidden2 = Dense(10, activation='relu', kernel_initializer='he_normal')(hidden1)
-    # regression output
-    out_reg = Dense(1, activation='linear')(hidden2)
-    # classification output
-    out_clas = Dense(n_class, activation='sigmoid')(hidden2)
-    # define model
+    ### -----------------------------------------------------------------------
+    ### Temporal split.
+    ### -----------------------------------------------------------------------
+    tr, va, te, val_phases, test_phases = temporal_split(df)
+    print(f"Split by maturity phase -> train {tr.sum()} | val {va.sum()} "
+          f"| test {te.sum()}")
+    print(f"  validation phases: {val_phases.tolist()}")
+    print(f"  test phases:       {test_phases.tolist()}")
+
+    X_all = df[FEATURES].astype(float)
+    y_reg_all = df[TARGET_REG].astype(int)
+    # Binarise at > LABEL_THRESHOLD. `astype(int)` would truncate the
+    # continuous anonymised label and discard 98 % of the true positives.
+    y_clas_all = (df[TARGET_CLAS] > LABEL_THRESHOLD).astype(int)
+
+    # Standardise. Fit on the training rows only - fitting on everything leaks
+    # test-set scale information into training.
+    scaler = StandardScaler().fit(X_all[tr])
+    Xtr, Xva, Xte = (scaler.transform(X_all[m]) for m in (tr, va, te))
+
+    ytr_reg, yva_reg, yte_reg = (y_reg_all[m].values for m in (tr, va, te))
+    ytr_clas, yva_clas, yte_clas = (y_clas_all[m].values for m in (tr, va, te))
+
+    base_rate = ytr_clas.mean()
+    print(f"Positive class rate in train: {base_rate:.5f} "
+          f"({ytr_clas.sum()} of {len(ytr_clas)})")
+
+    ### -----------------------------------------------------------------------
+    ### Model.
+    ### -----------------------------------------------------------------------
+    n_features = len(FEATURES)
+    visible = Input(shape=(n_features,), name='features')
+    hidden1 = Dense(64, activation='relu', kernel_initializer='he_normal')(visible)
+    hidden2 = Dense(32, activation='relu', kernel_initializer='he_normal')(hidden1)
+    out_reg = Dense(1, activation='linear', name='phase')(hidden2)
+    # softmax, not sigmoid: sparse_categorical_crossentropy expects a
+    # distribution over the two classes.
+    out_clas = Dense(2, activation='softmax', name='erroneous')(hidden2)
+
     model = Model(inputs=visible, outputs=[out_reg, out_clas])
-    # partile the keras model
-    model.partile(loss=['mse', 'sparse_categorical_crossentropy'], optimizer='adam', metrics=['accuracy'])
-    # plot graph of model
-    # plot_model(model, to_file="akt_mlp_model_"+str(epochs)+"_"+str(batch_size)+".png", show_shapes=True)
-    # fit the keras model on the dataset
-    model.fit(X_train, [y_train_reg, y_train_clas], epochs=epochs, batch_size=batch_size, verbose=1)
-    # model.fit(X_train, y_train_clas, epochs=epochs, batch_size=batch_size, verbose=1)
-    # make predictions on test set
-    yhat1_test, yhat2_test = model.predict(X_test)
-    # calculate error for regression model
-    error_test = mean_absolute_error(y_test_reg, yhat1_test)
-    print('MAE test: %.3f' % error_test)
-    # evaluate accuracy for classification model
-    yhat2_test = np.around(yhat2_test[:, 1])
-    acc = accuracy_score(y_test_clas, yhat2_test)
-    print('Accuracy test: %.3f' % acc)
-    # Create confusion matrix for the test dataset.
-    conf_matrix = metrics.confusion_matrix(y_test_clas, yhat2_test)
-    print(conf_matrix)
-    # print(cnf_matrix.to_latex(index=False))
-    # make predictions on train set
-    yhat1_train, yhat2_train = model.predict(X_train)
-    # calculate error for regression model
-    error_train = mean_absolute_error(y_train_reg, yhat1_train)
-    print('MAE train: %.3f' % error_train)
-    # evaluate accuracy for classification model
-    yhat2_train = np.around(yhat2_train[:, 1])
-    acc = accuracy_score(y_train_clas, yhat2_train)
-    print('Accuracy train: %.3f' % acc)
-    # print('Accuracy for test set: %0.4f' % accuracy_score(y_test_class, yhat2_test))
-    # print('Accuracy for train set: %0.4f' % accuracy_score(y_train_class, yhat2_train))
-    # print('\n')
-    # print('Precision for test set: %0.4f' % precision_score(y_test_class, yhat2_test))
-    # print('Precision for train set: %0.4f' % precision_score(y_train_class, yhat2_train))
-    # print('\n')
-    # print('Recall for test set: %0.4f' % recall_score(y_test_class, yhat2_test))
-    # print('Recall for train set: %0.4f' % recall_score(y_train_class, yhat2_train))
-    # train_fpr, train_tpr, train_thresholds = roc_curve(y_train_class, yhat2_train)
-    # test_fpr, test_tpr, test_thresholds = roc_curve(y_test_class, yhat2_test)
-    # train_roc_auc = auc(train_fpr, train_tpr)
-    # test_roc_auc = auc(test_fpr, test_tpr)
-    # print('AUC for test set: %0.4f' % test_roc_auc)
-    # print('AUC for train set: %0.4f' % train_roc_auc)
-    ### ---------------------------------------------------------------------------
-    ### Store the model.
-    ### ---------------------------------------------------------------------------
-    # os.chdir(project_path)
-    # from sklearn.externals import joblib
-    # # Save to file.
-    # mlp_file = "akt_mlp_model_"+str(epochs)+"_"+str(batch_size)+".pkl"
-    # joblib.dump(model, mlp_file)
-    # # Load from file
-    # mlp_model = joblib.load(mlp_file)
-    ### ---------------------------------------------------------------------------
-    ### Apply to whole dataset and store.
-    ### ---------------------------------------------------------------------------
-    # # Load new clean dataset.
-    # os.chdir(new_df_path)
-    # akt_df_new = pd.read_csv("akt_new_nael_data_clean.csv")
-    # df = akt_df_new
-    # df['cons'] = 0
-    # df['conf'] = 0
-    # df['cstp'] = 0
-    # Create the required feature setting, where possible.
-    df_pred = df[features]
-    y_reg = df[target_reg]
-    y_clas = df[target_clas]
-    # Predict.
-    yhat1, yhat2 = model.predict(df_pred)
-    # calculate error for regression model
-    error_test = mean_absolute_error(y_reg, yhat1)
-    print('MAE whole dataset: %.3f' % error_test)
-    # evaluate accuracy for classification model
-    yhat2 = np.around(yhat2[:, 1])
-    acc = accuracy_score(y_clas, yhat2)
-    print('Accuracy whole dataset: %.6f' % acc)
-    # Map binary BDQV prediction to mlpp prediction probabiliy.
-    df_pred["mlpp_reg"] = yhat1
-    df_pred["mlpp_clas"] = yhat2
-    y_true = df["erroneous"]
-    df_pred["erroneous"] = df["erroneous"]
-    y_true = df_pred["erroneous"]
-    y_pred = df_pred["mlpp_clas"]
-    # Mark false positives and false negatives.
-    df_pred["conf"] = np.where(
-        y_true > y_pred, "false negative",
-        np.where(y_true < y_pred, "false positive", "correct prediction"))
-    df_pred['conf'].value_counts()
-    # Create confusion matrix.
-    conf_matrix = metrics.confusion_matrix(y_true, y_pred)
-    print(conf_matrix)
-    precision = precision_score(y_true, y_pred)
-    print('Precision: %.6f' % precision)
-    recall = recall_score(y_true, y_pred)
-    print('Recall: %.6f' % recall)
-    # Map KOGR and NRCLs back.
-    # df_pred["kogr"] = akt_ohe_nael_datacsv["kogr"]
-    # df_pred["nael"] = akt_ohe_nael_datacsv["nael"]
-    # target_column = df["nael"]
-    # keys = list(akt_nrcl_map_ohe['nael'])
-    # values = list(akt_nrcl_map_ohe['nael'])
-    # map_values = dict(zip(keys, values))
-    # mapper = target_column.isin(map_values)
-    # df.loc[mapper, 'nael'] = df.loc[mapper, 'nael'].apply(lambda row: map_values[row])
-    # # df.fillna(0, inplace=True)
-    # df["nael"].unique()
-    # # Clean up and look out for nans.
-    # df_pred = replacegaps(df_pred)
-    # # print(df.isna().sum())
-    # df_pred = df_pred.fillna(0)
-    # # print(df.isna().sum())
-    # # print(df.info())
-    # Save cleaned file.
-    # os.chdir(df_path)
-    df_pred.to_csv(FP_DATA + "mlp_"+str(epochs)+"_"+str(batch_size)+"pred.csv")
-    # df_pred = pd.read_csv("akt_mlp_"+str(epochs)+"_"+str(batch_size)+"pred.csv",sep=',',encoding='latin-1')
-    ### ---------------------------------------------------------------------------
-    ### Plot selected results.
-    ### ---------------------------------------------------------------------------
-    # # Visualize ROC curve
-    # fig, ax = plt.subplots(figsize=(8, 4))
-    # plt.plot(test_fpr, test_tpr, color='tab:red', label='ROC curve for test set (area = %0.2f)' % test_roc_auc)
-    # plt.plot(train_fpr, train_tpr, color='tab:blue', label='ROC curve for train set (area = %0.2f)' % train_roc_auc)
-    # plt.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--')
-    # plt.xlim([0.0, 1.0])
-    # plt.ylim([0.0, 1.05])
-    # plt.legend(loc="lower right")
-    # title = ax.set_title('Count of $NRCLs$ by mapped $BLDP$.')
-    # ax.set_xlabel('False Positive Rate')
-    # ax.set_ylabel('True Positive Rate')
-    # ax.ticklabel_format(axis="y", style="sci", scilimits=(0,0))
-    # fig.tight_layout()
-    # #plt.savefig("akt_mlp_roc_"+str(epochs)+"_"+str(batch_size)+".png", dpi=300)
-    ### ---------------------------------------------------------------------------
-    # df_pred["dtcs"] = akt_ohe_nael_datacsv["dtcs"]
-    # # Visualize predictions
-    # selected_features = ["kogr", "feature_1", "feature_4", "dtcs", "rho_v", "clus",
-    #                      "anom", "mlpp_reg", "mlpp_clas", "conf"]
-    # cor_df= df_pred[selected_features]
-    # fig, ax = plt.subplots()
-    # ax = sns.pairplot(cor_df, kind="scatter", hue="conf",palette=["tab:blue", "tab:red", "gold"])
-    # # ax.fig.suptitle('Corelogram of features with medium correlation.')
-    # #plt.savefig("akt_mlp_result_"+str(epochs)+"_"+str(batch_size)+".png", dpi=300)
+    model.compile(
+        loss={'phase': 'mse', 'erroneous': 'sparse_categorical_crossentropy'},
+        loss_weights={'phase': 1.0, 'erroneous': 1.0},
+        optimizer='adam',
+    )
+
+    # Keras does not accept class_weight for multi-output models, so the
+    # imbalance is handled with per-sample weights on the classification head.
+    pos_weight = (1.0 - base_rate) / max(base_rate, 1e-9)
+    w_clas_tr = np.where(ytr_clas == 1, pos_weight, 1.0)
+    w_clas_va = np.where(yva_clas == 1, pos_weight, 1.0)
+    print(f"Positive-class weight: {pos_weight:.1f}")
+
+    early = EarlyStopping(monitor='val_loss', patience=patience,
+                          restore_best_weights=True)
+    model.fit(
+        Xtr, {'phase': ytr_reg, 'erroneous': ytr_clas},
+        sample_weight={'phase': np.ones_like(ytr_reg, dtype=float),
+                       'erroneous': w_clas_tr},
+        validation_data=(Xva, {'phase': yva_reg, 'erroneous': yva_clas},
+                         {'phase': np.ones_like(yva_reg, dtype=float),
+                          'erroneous': w_clas_va}),
+        epochs=epochs, batch_size=batch_size, callbacks=[early], verbose=2,
+    )
+
+    ### -----------------------------------------------------------------------
+    ### Evaluation.
+    ### -----------------------------------------------------------------------
+    def score(X):
+        reg, clas = model.predict(X, batch_size=4096, verbose=0)
+        return reg.ravel(), clas[:, 1]
+
+    reg_va, p_va = score(Xva)
+    reg_te, p_te = score(Xte)
+
+    # The operating point is chosen on validation, never on test.
+    threshold = threshold_for_budget(p_va, ALERT_BUDGET_FRACTION)
+    print(f"\nAlert budget {ALERT_BUDGET_FRACTION:.1%} -> "
+          f"threshold {threshold:.4f} (chosen on validation)")
+
+    report = {}
+    for name, yc, yr, p, r in (("validation", yva_clas, yva_reg, p_va, reg_va),
+                               ("test", yte_clas, yte_reg, p_te, reg_te)):
+        k = int(round(len(p) * ALERT_BUDGET_FRACTION))
+        prec_k, rec_k, hits = precision_recall_at_k(yc, p, k)
+        yhat = (p >= threshold).astype(int)
+        block = {
+            "n": int(len(p)),
+            "positives": int(yc.sum()),
+            "base_rate": float(yc.mean()),
+            # PR-AUC is the threshold-free headline metric for a 0.24 %
+            # positive rate; accuracy is reported only for comparability.
+            "pr_auc": float(average_precision_score(yc, p)) if yc.sum() else None,
+            "roc_auc": float(roc_auc_score(yc, p)) if yc.sum() else None,
+            "lift_over_base": (float(prec_k / yc.mean())
+                               if yc.sum() and yc.mean() > 0 else None),
+            "alert_budget_k": k,
+            "precision_at_k": float(prec_k),
+            "recall_at_k": float(rec_k),
+            "hits_at_k": hits,
+            "precision_at_threshold": float(precision_score(yc, yhat,
+                                                            zero_division=0)),
+            "recall_at_threshold": float(recall_score(yc, yhat,
+                                                      zero_division=0)),
+            "accuracy": float((yhat == yc).mean()),
+            "phase_mae": float(mean_absolute_error(yr, r)),
+            "confusion_matrix": confusion_matrix(yc, yhat).tolist(),
+        }
+        report[name] = block
+        print(f"\n--- {name} ---")
+        for key, value in block.items():
+            print(f"  {key}: {value}")
+
+    ### -----------------------------------------------------------------------
+    ### Persist predictions and the report.
+    ### -----------------------------------------------------------------------
+    reg_all, p_all = score(scaler.transform(X_all))
+    out = df[FEATURES].copy()
+    out["mlpp_reg"] = reg_all
+    out["mlpp_score"] = p_all
+    out["mlpp_clas"] = (p_all >= threshold).astype(int)
+    out["erroneous"] = y_clas_all
+    out["split"] = np.select([tr, va, te], ["train", "val", "test"],
+                             default="unassigned")
+    out["conf"] = np.select(
+        [(out.erroneous == 1) & (out.mlpp_clas == 1),
+         (out.erroneous == 0) & (out.mlpp_clas == 1),
+         (out.erroneous == 1) & (out.mlpp_clas == 0)],
+        ["true positive", "false positive", "false negative"],
+        default="true negative")
+    out.to_csv(FP_DATA + f"mlp_{epochs}_{batch_size}pred.csv", index=False)
+
+    report["label_threshold"] = LABEL_THRESHOLD
+    report["threshold"] = threshold
+    report["alert_budget_fraction"] = ALERT_BUDGET_FRACTION
+    report["positive_class_weight"] = pos_weight
+    with open(FP_DATA + "mlp_report.json", "w") as handle:
+        json.dump(report, handle, indent=2)
+    print(f"\nWrote {FP_DATA}mlp_report.json")
+    return report
 
 
 ### ---------------------------------------------------------------------------
 ### End.
 ### ---------------------------------------------------------------------------
 
-elapsed_time = time.time() - start_time
-print(time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
-
-#os.chdir(project_path)
-#os.system(next_script)
+if __name__ == '__main__':
+    multi_output_mlp()
+    print(time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time)))

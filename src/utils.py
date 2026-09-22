@@ -187,7 +187,7 @@ def create_adjacency(df):
     '''
     Creates an adjacency matrix for ohe component part for one vehicle series.
     '''
-    component_part = df["component"].append(df["part"]).drop_duplicates()
+    component_part = pd.concat([df["component"], df["part"]]).drop_duplicates()
     component_part = component_part.reset_index(drop = True)
     n = len(component_part)
     # Create adjacency matrix by counting occurences in the dataframe.

@@ -79,6 +79,8 @@ def solve_orthogonal_procrustes():
     '''
     This function is algorithm 1 from the paper.
     '''
+    skipped = []
+
     # Get all timestamp.
     timestamp = df["timestamp"].astype(str).unique()
     timestamp_list = timestamp.tolist()
@@ -156,16 +158,36 @@ def solve_orthogonal_procrustes():
                     # #plt.savefig("akt_orthogonal_"+str(part)+str(timestamp)+".png", dpi=300)
 
                     # compute Rho_V (Escoufier 1973).
-                    rho_v = np.sqrt(np.trace(R.T * R))
+                    # np.matmul, not `*`: R comes from np.mat upstream where
+                    # `*` happens to mean matrix product. On a plain ndarray the
+                    # same line is an elementwise product and rho_v is silently
+                    # wrong. Be explicit.
+                    rho_v = np.sqrt(np.trace(np.asarray(R).T @ np.asarray(R)))
                     # Append to lists.
                     grouped_part_list.append(timestamp + part)
+                    grouped_timestamp_list.append(float(timestamp))
+                    grouped_component_list.append(float(part))
                     grouped_r_list.append(R)
                     grouped_sca_list.append(sca)
                     grouped_rho_v_list.append(rho_v)
                     # Print results.
                     print(str(part) + ", " + str(timestamp) + " scale is ", str("{:.2f}".format(sca)))
                     print(str(part) + ", " + str(timestamp) + " rho_v is ", str("{:.2f}".format(rho_v)))
-            except: pass
+            except (ValueError, IndexError, TypeError, KeyError,
+                    np.linalg.LinAlgError) as exc:
+                # The original code used a bare `except: pass` here, which
+                # silently swallowed a fatal pandas incompatibility and made
+                # the whole stage produce zero results. Skips are now counted
+                # and reported instead of hidden.
+                skipped.append((timestamp, component, repr(exc)))
+
+    if skipped:
+        print(f"WARNING: skipped {len(skipped)} (timestamp, component) groups; "
+              f"first: {skipped[0]}")
+    if not grouped_rho_v_list:
+        raise RuntimeError(
+            "The Procrustes stage produced no results at all. Previously this "
+            "failed silently and surfaced as a KeyError three stages later.")
 
     ### ---------------------------------------------------------------------------
     ### Create dataframes.
@@ -183,12 +205,16 @@ def solve_orthogonal_procrustes():
     df = replacegaps(df)
     df = df.fillna(0)
 
-    df_rho_v["mapping"] = df_rho_v.index.astype(str)
-    df["mapping"] = df["timestamp"].astype(str) + df["part"].astype(str)
-    df = pd.merge(df, df_rho_v, on="mapping", how="left")
-    df["rho_v"] = df[0]
-    del df["mapping"]
+    # Build a tidy (timestamp, part) -> rho_v table. The original code merged on a
+    # string concatenation of timestamp+part, which is ambiguous AND had duplicate
+    # keys, so the merge inflated 350k rows into ~4.9M duplicated rows.
+    rho_tidy = (pd.DataFrame({"timestamp": grouped_timestamp_list,
+                              "part": grouped_component_list,
+                              "rho_v": grouped_rho_v_list})
+                .groupby(["timestamp", "part"], as_index=False)["rho_v"].mean())
+    df = df.merge(rho_tidy, on=["timestamp", "part"], how="left")
     df = df.reset_index(drop=True)
+    assert len(df) == len(bom_data_csv), (len(df), len(bom_data_csv))
     # print(df.info())
 
     # Store dataset with rho_v.

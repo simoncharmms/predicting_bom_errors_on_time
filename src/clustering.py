@@ -7,6 +7,7 @@ The next step is the clustering itself, using a non-hierarchical algorithm.
 ### ---------------------------------------------------------------------------
 ### Preliminaries.
 ### ---------------------------------------------------------------------------
+import os
 import time
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -17,7 +18,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 from plots import plot, gca, add_titlebox, fancy_dendrogram
 from utils import replacegaps
-from constants import FP_DATA
+from constants import FP_DATA, HC_MAX_SAMPLE, RANDOM_SEED, CLUSTER_FEATURES
 
 # blockPrint()
 
@@ -42,7 +43,7 @@ def cluster():
     del df["Unnamed: 0"]
     # Sample if necessary to partute efficiently.
     # print(df.info())
-    # df = df.sample(frac=0.1, replace=True, random_state=1)
+    # df = df.sample(frac=0.1, replace=True, random_state=RANDOM_SEED)
     # Clean up and look out for nans.
     df = replacegaps(df)
     # print(df.isna().sum())
@@ -60,7 +61,16 @@ def cluster():
     start_time_loop = time.time()
     for subpdln in subpdln_list:
         df_sub = df[df["component"] == subpdln]
-        df_hc = df_sub[["part", "erroneous", "rho_v"]]
+        # LEAKAGE FIX: the original code clustered on ["part", "erroneous",
+        # "rho_v"], i.e. on the target itself, and then handed the resulting
+        # cluster id to the MLP as a feature. Contextualisation must be built
+        # from observable attributes only.
+        df_hc = df_sub[CLUSTER_FEATURES]
+        # Hierarchical linkage is O(n^2) in memory; cap the subsample used to
+        # estimate the cluster count (override with HC_MAX_SAMPLE).
+        _hc_max = int(os.environ.get("HC_MAX_SAMPLE", HC_MAX_SAMPLE))
+        if len(df_hc) > _hc_max:
+            df_hc = df_hc.sample(n=_hc_max, random_state=RANDOM_SEED)
         print('Currently clustering: ' + str(subpdln))
 
         # column = "component"
@@ -144,31 +154,29 @@ def cluster():
         ### ---------------------------------------------------------------------------
 
         X = df_hc
-        y = df_hc["erroneous"]
 
         # k-means clustering.
-        est = KMeans(n_clusters=int(no_clusters))
+        est = KMeans(n_clusters=int(no_clusters), n_init=10, random_state=RANDOM_SEED)
         est.fit(X)
         labels = est.labels_
 
         # 3D-plot of clustered data.
         fig = plt.figure(figsize=(4, 3))
-        ax = Axes3D(fig, rect=[0, 0, .95, 1], elev=48, azim=134)
-        ax.scatter(X["rho_v"], X["erroneous"], X["part"],
+        ax = fig.add_subplot(111, projection='3d', elev=48, azim=134)
+        ax.scatter(X["rho_v"], X["timestamp"], X["part"],
                    c=labels.astype(float), cmap="vlag")
 
-        ax.w_xaxis.set_ticklabels([])
-        ax.w_yaxis.set_ticklabels([])
-        ax.w_zaxis.set_ticklabels([])
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
         ax.set_xlabel('$R_v$')
-        ax.set_ylabel('$erroneous$')
+        ax.set_ylabel('$timestamp$')
         ax.set_zlabel('part')
         ax.set_title("$K-means$ clustered data of part " + str(subpdln) +
                      ". \n Number clusters determined by adjusted $i$: " +
                      no_clusters + ".")
-        ax.dist = 12
-        # plt.savefig("akt_clustered_data"+str(subpdln)+".png", dpi=300)
-        plt.close
+            # plt.savefig("akt_clustered_data"+str(subpdln)+".png", dpi=300)
+        plt.close(fig)
     elapsed_time = time.time() - start_time_loop
     print(time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
     ### ---------------------------------------------------------------------------
@@ -180,29 +188,28 @@ def cluster():
     ### ---------------------------------------------------------------------------
     ### K-means clustering.
     ### ---------------------------------------------------------------------------
-    X = df[["rho_v", "erroneous", "part"]]
-    y = df["erroneous"]
+    X = df[CLUSTER_FEATURES]
+
     # k-means clustering.
-    est = KMeans(n_clusters=int(no_clusters))
+    est = KMeans(n_clusters=int(no_clusters), n_init=10, random_state=RANDOM_SEED)
     est.fit(X)
     labels = est.labels_
     # 3D-plot of clustered data.
     fig = plt.figure(figsize=(4, 3))
-    ax = Axes3D(fig, rect=[0, 0, .95, 1], elev=48, azim=134)
-    ax.scatter(X["rho_v"], X["erroneous"], X["part"],
+    ax = fig.add_subplot(111, projection='3d', elev=48, azim=134)
+    ax.scatter(X["rho_v"], X["timestamp"], X["part"],
                c=labels.astype(float), cmap="vlag")
-    ax.w_xaxis.set_ticklabels([])
-    ax.w_yaxis.set_ticklabels([])
-    ax.w_zaxis.set_ticklabels([])
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.set_zticklabels([])
     ax.set_xlabel('$R_v$')
-    ax.set_ylabel('$erroneous$')
+    ax.set_ylabel('$timestamp$')
     ax.set_zlabel('$part$')
     ax.set_title("$K-means$ clustered data of all $part$. \n "
                  "Number clusters determined by adjusted $i$: " +
                  str(no_clusters) + ".")
-    ax.dist = 12
     # plt.savefig("akt_clustered_data.png", dpi=300)
-    plt.close
+    plt.close(fig)
     ### ---------------------------------------------------------------------------
     ### Store clustered dataset.
     ### ---------------------------------------------------------------------------

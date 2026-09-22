@@ -179,3 +179,12 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# Generated pipeline artefacts
+data/bom_data*.csv
+data/df_sca.csv
+data/df_rho.csv
+data/mlp_*.csv
+data/mlp_report.json
+.venv/
+run*.log
+tail.log
