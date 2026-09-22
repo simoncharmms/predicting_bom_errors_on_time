@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 
-from .bdqv import BDQV_TYPES, bdqv_signature, bdqvs_for_rows, derive_bdqv_frame
+from .bdqv import BDQV_TYPES, FLAG_TYPES, bdqv_signature, bdqvs_for_rows, derive_bdqv_frame
 from .behaviour import (BEHAVIOUR_FEATURES, OnlineBehaviourModel,
                         behaviour_features, simulate_event_log)
 from .knowledge_base import Assertion, KnowledgeBase
@@ -305,13 +305,21 @@ class PredictionAgent:
     def explain(self, alert: Alert) -> dict:
         """The evidence subgraph an engineer sees next to the alert."""
         edges = self.kb.neighbours(f"part:{alert.part:g}")
+        # Flags are deliberately excluded from signatures, so an alert can show
+        # "signature: clean" while a flag is firing. Say so, otherwise the
+        # explanation looks self-contradictory to the engineer reading it.
+        sig_hits = [t for t in alert.bdqv_types if t not in FLAG_TYPES]
+        flag_hits = [t for t in alert.bdqv_types if t in FLAG_TYPES]
+        n = len(sig_hits)
         return {
             "alert": f"part {alert.part:g} / component {alert.component:g} "
                      f"at phase {alert.phase:g}",
             "why": (f"BDQV signature '{alert.signature}' has historical "
                     f"precision {alert.evidence['registry_precision']:.3f} "
-                    f"({len(alert.bdqv_types)} violations firing: "
-                    f"{', '.join(alert.bdqv_types) or 'none'})"),
+                    f"({n} violation{'' if n == 1 else 's'} firing: "
+                    f"{', '.join(sig_hits) or 'none'})"
+                    + (f"; flags set but excluded from the signature: "
+                       f"{', '.join(flag_hits)}" if flag_hits else "")),
             "evidence": alert.evidence,
             "graph_context": edges[:10],
         }

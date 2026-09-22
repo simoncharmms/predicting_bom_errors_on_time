@@ -253,8 +253,10 @@ function selectAlert(i) {
     <div>
       <div class="l dim" style="font-size:10px;letter-spacing:.06em;text-transform:uppercase">Violations firing</div>
       <div style="margin-top:4px">${a.bdqv_types.length
-        ? a.bdqv_types.map(t => `<span class="tag">${t}</span>`).join('')
-        : '<span class="tag flagtype">none — flagged on features alone</span>'}</div>
+        ? a.bdqv_types.map(t => D.signature_types.includes(t)
+            ? `<span class="tag">${t}</span>`
+            : `<span class="tag flagtype" title="high-prevalence flag, excluded from signatures">${t} · flag</span>`).join('')
+        : '<span class="tag flagtype">none — ranked on features alone</span>'}</div>
     </div>
     <div class="ev-why"><strong>Why:</strong> ${a.why}</div>
     <div>
